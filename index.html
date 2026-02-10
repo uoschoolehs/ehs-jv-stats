@@ -481,6 +481,32 @@
       text-decoration: underline;
     }
 
+    .team-total-row {
+      background: rgba(226, 183, 74, 0.08) !important;
+      font-weight: 600;
+      border-top: 1px solid rgba(226, 183, 74, 0.3);
+    }
+
+    .team-total-row td {
+      color: #475569 !important;
+      padding: 12px 16px !important;
+      font-size: 0.9em;
+    }
+
+    .team-total-row .player-name {
+      cursor: default !important;
+      color: #64748b !important;
+      font-weight: 700;
+      text-transform: uppercase;
+      font-size: 0.8em;
+      letter-spacing: 0.5px;
+    }
+
+    .team-total-row .player-name:hover {
+      color: #64748b !important;
+      text-decoration: none !important;
+    }
+
     .loading {
       text-align: center;
       padding: 60px 20px;
@@ -1520,6 +1546,7 @@
     let mipAwards = {};
     let currentWeekIndex = 0;
     let allWeeks = [];
+    let playerMetadata = {}; // Store player metadata like grade/classOf
 
     const COLUMN_ORDER = {
       standardAverages: ['Player', 'GP', 'PTS', 'REB', 'AST', 'STL', 'BLK', 'PF', 'TO', 'FG%', '3PT%', 'FT%'],
@@ -1803,6 +1830,9 @@
         let leaderValue = isLowerBetter ? Infinity : -Infinity;
 
         stats.forEach(player => {
+          // Skip team total from leader calculations
+          if (player.Player === 'TEAM TOTAL') return;
+          
           const val = parseLeaderValue(player[cat], cat);
           if (val === null) return;
 
@@ -1842,7 +1872,6 @@
 
           html += `
             <div class="leader-card">
-              <div class="leader-crown">👑</div>
               <div class="leader-category">${catLabel}</div>
               <div class="leader-name" onclick="openPlayerModal('${leader.Player}')">${leader.Player}</div>
               <div class="leader-value">${displayValue}</div>
@@ -1870,6 +1899,9 @@
         let leaderPlayer = null;
 
         stats.forEach(player => {
+          // Skip team total row from leader calculations
+          if (player.Player === 'TEAM TOTAL') return;
+          
           let val;
           if (col === 'AST/TO') {
             const s = String(player[col] ?? '').trim();
@@ -2004,7 +2036,7 @@
 
     async function init() {
       setupCustomSelect();
-      await Promise.all([fetchStats(), loadGameLogs(), loadGPTAwards()]);
+      await Promise.all([fetchStats(), loadGameLogs(), loadGPTAwards(), loadPlayerMetadata()]);
       calculateWeeklyPerformances();
       renderTable(); // Re-render after all data is loaded
     }
@@ -2044,6 +2076,22 @@
       } catch (error) {
         console.error('Failed to load GPT awards:', error);
         gptAwards = {};
+      }
+    }
+
+    async function loadPlayerMetadata() {
+      try {
+        const response = await fetch(`${FIREBASE_URL}/teams/${TEAM_ID}/playerMetadata.json`);
+        if (!response.ok) {
+          playerMetadata = {};
+          return;
+        }
+        
+        const metadata = await response.json();
+        playerMetadata = metadata || {};
+      } catch (error) {
+        console.error('Failed to load player metadata:', error);
+        playerMetadata = {};
       }
     }
 
@@ -2183,7 +2231,11 @@
           accumulateStats(playerTotals, player, index);
         });
       });
-      scrimmageStats = processStats(playerTotals);
+      
+      const stats = processStats(playerTotals);
+      // Note: Per user request, scrimmages are not included in team totals calculations
+      // So we don't add team row for scrimmages
+      scrimmageStats = stats;
     }
 
     function calculateRegularSeasonStats() {
@@ -2199,7 +2251,17 @@
           accumulateStats(playerTotals, player, index);
         });
       });
-      regularSeasonStats = processStats(playerTotals);
+      
+      const stats = processStats(playerTotals);
+      const teamStats = calculateTeamStats(regularGames);
+      
+      // Add team totals to the stats
+      if (teamStats) {
+        stats.averages.push(teamStats.averages);
+        stats.totals.push(teamStats.totals);
+      }
+      
+      regularSeasonStats = stats;
     }
 
     function accumulateStats(totals, player, index = 0) {
@@ -2291,6 +2353,167 @@
       return { averages, totals };
     }
 
+    function calculateTeamStats(games) {
+      // Calculate team stats from game logs
+      if (!games || games.length === 0) return null;
+      
+      const teamTotals = {
+        Player: 'TEAM TOTAL',
+        GP: games.length,
+        GS: 0,
+        PTS: 0,
+        REB: 0,
+        AST: 0,
+        STL: 0,
+        BLK: 0,
+        PF: 0,
+        TO: 0,
+        FGMade: 0,
+        FGAtt: 0,
+        '3PTMade': 0,
+        '3PTAtt': 0,
+        FTMade: 0,
+        FTAtt: 0
+      };
+
+      const parseShooting = (str) => {
+        if (!str || typeof str !== 'string') return { made: 0, att: 0 };
+        if (str.includes('-')) {
+          const [m, a] = str.split('-').map(x => parseInt(x) || 0);
+          return { made: m, att: a };
+        }
+        return { made: 0, att: 0 };
+      };
+
+      // Sum up all player stats for each game
+      games.forEach(game => {
+        game.players.forEach(player => {
+          const fg = parseShooting(player.FG);
+          const threeP = parseShooting(player['3PT']);
+          const ft = parseShooting(player.FT);
+
+          teamTotals.PTS += parseInt(player.PTS) || 0;
+          teamTotals.REB += parseInt(player.REB) || 0;
+          teamTotals.AST += parseInt(player.AST) || 0;
+          teamTotals.STL += parseInt(player.STL) || 0;
+          teamTotals.BLK += parseInt(player.BLK) || 0;
+          teamTotals.PF += parseInt(player.PF) || 0;
+          teamTotals.TO += parseInt(player.TO) || 0;
+          teamTotals.FGMade += fg.made;
+          teamTotals.FGAtt += fg.att;
+          teamTotals['3PTMade'] += threeP.made;
+          teamTotals['3PTAtt'] += threeP.att;
+          teamTotals.FTMade += ft.made;
+          teamTotals.FTAtt += ft.att;
+        });
+      });
+
+      // Calculate percentages
+      const fgPct = teamTotals.FGAtt > 0 ? (teamTotals.FGMade / teamTotals.FGAtt) : 0;
+      const threePtPct = teamTotals['3PTAtt'] > 0 ? (teamTotals['3PTMade'] / teamTotals['3PTAtt']) : 0;
+      const ftPct = teamTotals.FTAtt > 0 ? (teamTotals.FTMade / teamTotals.FTAtt) : 0;
+      const eFG = teamTotals.FGAtt > 0 ? ((teamTotals.FGMade + 0.5 * teamTotals['3PTMade']) / teamTotals.FGAtt * 100) : 0;
+      const tsDenom = 2 * (teamTotals.FGAtt + 0.44 * teamTotals.FTAtt);
+      const ts = tsDenom > 0 ? (teamTotals.PTS / tsDenom * 100) : 0;
+      const astTo = teamTotals.TO > 0 ? (teamTotals.AST / teamTotals.TO) : (teamTotals.AST > 0 ? 999 : 0);
+
+      return {
+        averages: {
+          Player: 'TEAM TOTAL',
+          GP: teamTotals.GP,
+          PTS: (teamTotals.PTS / teamTotals.GP).toFixed(1),
+          REB: (teamTotals.REB / teamTotals.GP).toFixed(1),
+          AST: (teamTotals.AST / teamTotals.GP).toFixed(1),
+          STL: (teamTotals.STL / teamTotals.GP).toFixed(1),
+          BLK: (teamTotals.BLK / teamTotals.GP).toFixed(1),
+          PF: (teamTotals.PF / teamTotals.GP).toFixed(1),
+          TO: (teamTotals.TO / teamTotals.GP).toFixed(1),
+          'FG%': (fgPct * 100).toFixed(1) + '%',
+          '3PT%': (threePtPct * 100).toFixed(1) + '%',
+          'FT%': (ftPct * 100).toFixed(1) + '%',
+          'eFG%': eFG.toFixed(1) + '%',
+          'TS%': ts.toFixed(1) + '%',
+          'AST/TO': astTo === 999 ? '∞' : astTo.toFixed(2)
+        },
+        totals: {
+          Player: 'TEAM TOTAL',
+          GP: teamTotals.GP,
+          GS: 0,
+          PTS: teamTotals.PTS,
+          REB: teamTotals.REB,
+          AST: teamTotals.AST,
+          STL: teamTotals.STL,
+          BLK: teamTotals.BLK,
+          PF: teamTotals.PF,
+          TO: teamTotals.TO,
+          FG: `${teamTotals.FGMade}-${teamTotals.FGAtt}`,
+          '3PT': `${teamTotals['3PTMade']}-${teamTotals['3PTAtt']}`,
+          FT: `${teamTotals.FTMade}-${teamTotals.FTAtt}`
+        }
+      };
+    }
+
+    function calculateGameTeamTotal(game) {
+      // Calculate team total for a single game log
+      if (!game || !game.players || game.players.length === 0) return null;
+
+      const parseShooting = (str) => {
+        if (!str || typeof str !== 'string') return { made: 0, att: 0 };
+        if (str.includes('-')) {
+          const [m, a] = str.split('-').map(x => parseInt(x) || 0);
+          return { made: m, att: a };
+        }
+        return { made: 0, att: 0 };
+      };
+
+      let totalPTS = 0, totalREB = 0, totalAST = 0, totalSTL = 0, totalBLK = 0;
+      let totalPF = 0, totalTO = 0;
+      let totalFGMade = 0, totalFGAtt = 0;
+      let total3PTMade = 0, total3PTAtt = 0;
+      let totalFTMade = 0, totalFTAtt = 0;
+
+      game.players.forEach(player => {
+        const fg = parseShooting(player.FG);
+        const threeP = parseShooting(player['3PT']);
+        const ft = parseShooting(player.FT);
+
+        totalPTS += parseInt(player.PTS) || 0;
+        totalREB += parseInt(player.REB) || 0;
+        totalAST += parseInt(player.AST) || 0;
+        totalSTL += parseInt(player.STL) || 0;
+        totalBLK += parseInt(player.BLK) || 0;
+        totalPF += parseInt(player.PF) || 0;
+        totalTO += parseInt(player.TO) || 0;
+        totalFGMade += fg.made;
+        totalFGAtt += fg.att;
+        total3PTMade += threeP.made;
+        total3PTAtt += threeP.att;
+        totalFTMade += ft.made;
+        totalFTAtt += ft.att;
+      });
+
+      // Calculate team GameScore
+      const gmSc = totalPTS + 0.4 * totalFGMade - 0.7 * totalFGAtt - 
+                   0.4 * (totalFTAtt - totalFTMade) + 0.5 * totalREB + 
+                   totalSTL + 0.7 * totalAST + 0.7 * totalBLK - 
+                   0.4 * totalPF - totalTO;
+
+      return {
+        Player: 'TEAM TOTAL',
+        PTS: totalPTS,
+        REB: totalREB,
+        AST: totalAST,
+        STL: totalSTL,
+        BLK: totalBLK,
+        PF: totalPF,
+        TO: totalTO,
+        FG: `${totalFGMade}-${totalFGAtt}`,
+        '3PT': `${total3PTMade}-${total3PTAtt}`,
+        FT: `${totalFTMade}-${totalFTAtt}`,
+        GmSc: gmSc.toFixed(1)
+      };
+    }
+
     function updateHeader(data) {
       document.getElementById('record').textContent = data.record || '0-0';
       if (data.lastUpdated) {
@@ -2306,6 +2529,10 @@
 
     function sortByJerseyNumber(stats) {
       return [...stats].sort((a, b) => {
+        // Always keep TEAM TOTAL at the end
+        if (a.Player === 'TEAM TOTAL') return 1;
+        if (b.Player === 'TEAM TOTAL') return -1;
+        
         const numA = getJerseyNumber(a.Player || '');
         const numB = getJerseyNumber(b.Player || '');
         return numA - numB;
@@ -2320,7 +2547,11 @@
         return { data: [...originalOrder], state: 'none' };
       }
 
-      const sorted = [...stats].sort((a, b) => {
+      // Separate team total from regular players
+      const teamRow = stats.find(s => s.Player === 'TEAM TOTAL');
+      const playerStats = stats.filter(s => s.Player !== 'TEAM TOTAL');
+
+      const sorted = [...playerStats].sort((a, b) => {
         let valA = a[columnName];
         let valB = b[columnName];
 
@@ -2359,6 +2590,11 @@
         const strB = String(valB).toLowerCase();
         return newState === 'desc' ? strB.localeCompare(strA) : strA.localeCompare(strB);
       });
+
+      // Add team row back at the end if it exists
+      if (teamRow) {
+        sorted.push(teamRow);
+      }
 
       return { data: sorted, state: newState };
     }
@@ -2449,6 +2685,14 @@
           GmSc: calculateGameScore(p)
         }));
         
+        // Add team totals row if it's not a scrimmage
+        if (!gameLog.scrimmage) {
+          const teamTotals = calculateGameTeamTotal(gameLog);
+          if (teamTotals) {
+            stats.push(teamTotals);
+          }
+        }
+        
         stats = sortByJerseyNumber(stats);
         originalOrder = [...stats];
         setupTableSorting(stats, COLUMN_ORDER.gameLog);
@@ -2519,22 +2763,28 @@
       const tbody = document.getElementById('tableBody');
       const leaders = getStatLeaders(stats, columns);
       
-      tbody.innerHTML = stats.map(player => `
-        <tr>
+      tbody.innerHTML = stats.map(player => {
+        const isTeamRow = player.Player === 'TEAM TOTAL';
+        const rowClass = isTeamRow ? 'class="team-total-row"' : '';
+        
+        return `
+        <tr ${rowClass}>
           ${columns.map((col, idx) => {
             const value = player[col];
             let className = idx === 0 ? 'player-name' : '';
-            const clickHandler = idx === 0 ? `onclick="openPlayerModal('${player.Player}')"` : '';
+            // Don't make team total row clickable
+            const clickHandler = (idx === 0 && !isTeamRow) ? `onclick="openPlayerModal('${player.Player}')"` : '';
             
-            // Highlight stat leaders
-            if (leaders[col] === player.Player && col !== 'Player' && col !== 'GP' && col !== 'GS') {
+            // Highlight stat leaders (but not for team total row)
+            if (!isTeamRow && leaders[col] === player.Player && col !== 'Player' && col !== 'GP' && col !== 'GS') {
               className += ' stat-leader';
             }
             
             return `<td class="${className}" ${clickHandler}>${value ?? 0}</td>`;
           }).join('')}
         </tr>
-      `).join('');
+      `;
+      }).join('');
     }
 
     window.openPlayerModal = function(playerName) {
@@ -2583,7 +2833,15 @@
       const powCount = powAwards[currentPlayerName] || 0;
       const mipCount = mipAwards[currentPlayerName] || 0;
       
+      // Get player metadata
+      const metadata = playerMetadata[currentPlayerName] || {};
+      const classOf = metadata.classOf || metadata.grade;
+      
       let subtitleHTML = `${playerGames.length} Games Played`;
+      
+      if (classOf) {
+        subtitleHTML += ` <span style="color: #94a3b8;">•</span> <span style="color: #e2b74a;">Class of ${classOf}</span>`;
+      }
       
       if (gptCount > 0) {
         const awardText = gptCount === 1 ? '1x GPT Award' : `${gptCount}x GPT Award`;
@@ -2845,7 +3103,6 @@
 
     document.addEventListener('DOMContentLoaded', () => {
       init();
-      setInterval(() => fetchStats(), 30000);
     });
   </script>
 </body>
